@@ -237,6 +237,7 @@ function rotVec(x,y,deg){
   return {x:x*c-y*s, y:x*s+y*c};
 }
 const sn = v => snap ? Math.round(v/snap)*snap : Math.round(v*4)/4;
+const round4 = v => Math.round(v*4)/4;
 
 /* ─────────── history ─────────── */
 function push(){ past.push(clone(doc)); if(past.length>60) past.shift(); future=[]; }
@@ -516,6 +517,65 @@ function toPlan(cx,cy){
 function item(id){ return doc.items.find(i=>i.id===id); }
 function patch(id,p){ Object.assign(item(id), p); }
 
+/* ─────────── clearances — what the tape measure would read ─────────── */
+
+/* the axis-aligned patch of floor an item covers, rotation included */
+function footprint(it){
+  const cx = it.x+it.w/2, cy = it.y+it.h/2;
+  let x0=Infinity, y0=Infinity, x1=-Infinity, y1=-Infinity;
+  for(const [lx,ly] of [[0,0],[it.w,0],[0,it.h],[it.w,it.h]]){
+    const v = rotVec(lx-it.w/2, ly-it.h/2, it.rot||0);
+    x0=Math.min(x0,cx+v.x); x1=Math.max(x1,cx+v.x);
+    y0=Math.min(y0,cy+v.y); y1=Math.max(y1,cy+v.y);
+  }
+  return {x0,y0,x1,y1};
+}
+
+/* Nearest wall face on each side: the exterior wall's inner face, or any wall
+   item standing between the item and it. Faces, not centre lines — flush
+   against a wall reads 0, which is how the room measures in real life. */
+function walls(fp, self){
+  const room = doc.room, F = WALL/2, e = 0.01;
+  const out = {left:F, right:room.w-F, top:F, bottom:room.h-F};
+  for(const o of doc.items){
+    if(o.type!=="wall" || (self && o.id===self.id)) continue;
+    const f = footprint(o);
+    if(f.y0 < fp.y1-e && f.y1 > fp.y0+e){
+      if(f.x1 <= fp.x0+e) out.left  = Math.max(out.left,  f.x1);
+      if(f.x0 >= fp.x1-e) out.right = Math.min(out.right, f.x0);
+    }
+    if(f.x0 < fp.x1-e && f.x1 > fp.x0+e){
+      if(f.y1 <= fp.y0+e) out.top    = Math.max(out.top,    f.y1);
+      if(f.y0 >= fp.y1-e) out.bottom = Math.min(out.bottom, f.y0);
+    }
+  }
+  return out;
+}
+
+function gaps(it){
+  const fp = footprint(it), w = walls(fp, it);
+  return {left:fp.x0-w.left, right:w.right-fp.x1, top:fp.y0-w.top, bottom:w.bottom-fp.y1};
+}
+
+/* move the item so a given side sits `v` inches off the wall it faces */
+function setGap(it, side, v){
+  const g = gaps(it);
+  if(side==="left")  patch(it.id, {x: it.x + (v-g.left)});
+  if(side==="top")   patch(it.id, {y: it.y + (v-g.top)});
+}
+
+/* drawn for whatever is selected, so they track the drag as it happens */
+function clearDims(it){
+  const fp = footprint(it), w = walls(fp, it), col = "var(--accentink)";
+  const mx = (fp.x0+fp.x1)/2, my = (fp.y0+fp.y1)/2;
+  let s = "";
+  if(fp.x0-w.left   > 0.24) s += dim(w.left, my, fp.x0, my, 0, fmt(fp.x0-w.left), col);
+  if(w.right-fp.x1  > 0.24) s += dim(fp.x1, my, w.right, my, 0, fmt(w.right-fp.x1), col);
+  if(fp.y0-w.top    > 0.24) s += dim(mx, w.top, mx, fp.y0, 0, fmt(fp.y0-w.top), col);
+  if(w.bottom-fp.y1 > 0.24) s += dim(mx, fp.y1, mx, w.bottom, 0, fmt(w.bottom-fp.y1), col);
+  return s;
+}
+
 /* ─────────── drawing ─────────── */
 function dim(x1,y1,x2,y2,off,label,color,sw){
   color=color||"var(--dim)"; sw=sw||0.7;
@@ -696,6 +756,8 @@ function render2D(){
     s += `<g data-id="${it.id}" transform="rotate(${it.rot||0} ${cx} ${cy})">
             <g transform="translate(${it.x} ${it.y})">${inner}</g>${d}</g>`;
   }
+
+  if(sel && item(sel)) s += clearDims(item(sel));
 
   s += dim(0,0,room.w,0,-24,fmt(room.w),null,0.9);
   s += dim(room.w,0,room.w,splitY,16,fmt(splitY),null,0.9);
@@ -965,6 +1027,8 @@ function renderPanel(){
     <div class="row">${field("pW","WIDTH",it.w)}${field("pH","DEPTH",it.h)}</div>
     <div class="row">${field("pX","FROM LEFT",it.x)}${field("pY","FROM TOP",it.y)}
       ${field("pLS","LABEL SIZE", it.ls || doc.labelSize || 8, 0.5)}</div>
+    <div class="row">${field("pGL","GAP LEFT", round4(gaps(it).left))}
+      ${field("pGT","GAP TOP", round4(gaps(it).top))}</div>
     <div class="row">${field("pZ","HEIGHT (3D)", heightOf(it), 1)}
       ${it.type==="window" ? field("pSill","SILL (3D)", sillOf(it), 1) : ""}</div>
     <div class="chips">
@@ -985,6 +1049,8 @@ function syncPanel(){
   set("rw", doc.room.w); set("rh", doc.room.h); set("rs", doc.splitY);
   if(it && panelFor===it.id){
     set("pW", it.w); set("pH", it.h); set("pX", it.x); set("pY", it.y);
+    const g = gaps(it);
+    set("pGL", round4(g.left)); set("pGT", round4(g.top));
   }
 }
 
@@ -1001,6 +1067,14 @@ function bindProps(){
     e.addEventListener("focus", ()=>{ push(); }, {once:false});
   };
   num("pW","w"); num("pH","h"); num("pX","x"); num("pY","y"); num("pLS","ls"); num("pZ","h3");
+  [["pGL","left"],["pGT","top"]].forEach(([id,side])=>{
+    const e = $(id); if(!e) return;
+    e.addEventListener("input", ()=>{
+      const v = parseFloat(e.value); if(isNaN(v)) return;
+      setGap(it(), side, v); renderPlan(); syncPanel(); save();
+    });
+    e.addEventListener("focus", ()=>push());
+  });
   num("pSill","sill");
 
   $("pType").addEventListener("change", e=>{ push(); patch(sel,{type:e.target.value}); render(); });
