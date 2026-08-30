@@ -300,6 +300,7 @@ function cleanDoc(d){
       rot: (numv(s.rot,0,-36000,36000)%360+360)%360
     };
     if(s.ls    != null) o.ls    = numv(s.ls,8,2,30);
+    if(s.lr    != null) o.lr    = (numv(s.lr,0,-36000,36000)%360+360)%360;   /* label turn */
     if(s.h3    != null) o.h3    = numv(s.h3,30,0,600);     /* 3D object height */
     if(s.sill  != null) o.sill  = numv(s.sill,30,0,600);   /* 3D window sill   */
     if(s.doors != null) o.doors = DOORMODES.indexOf(s.doors)<0 ? "hinged" : s.doors;
@@ -606,9 +607,24 @@ function capStyle(it){
   return `font:600 ${s}px 'Archivo Narrow',sans-serif;letter-spacing:${(s*0.1).toFixed(2)}px`;
 }
 
+/* A label turned 90° reads down a tall, narrow piece instead of spilling out
+   its sides. Flat labels keep the spot their glyph chose for them — the foot of
+   a bookcase, beside a stair arrow — but a turned one runs down the middle of
+   the piece, which is the only line long enough to hold it. */
+function capText(it, x, y, label, fill, anchor){
+  const s = it.ls || doc.labelSize || 8;
+  let open = "", close = "";
+  if(it.lr){
+    open  = `<g transform="rotate(${it.lr} ${it.w/2} ${it.h/2})">`;
+    close = "</g>";
+    x = it.w/2; y = it.h/2 + s*0.35; anchor = "middle";
+  }
+  return `${open}<text x="${x}" y="${y}" text-anchor="${anchor||"middle"}" fill="${fill}"
+      style="${capStyle(it)}">${label}</text>${close}`;
+}
+
 function glyph(it){
   const w=it.w, h=it.h, L=esc(it.label||"");
-  const CAP = capStyle(it);
 
   if(it.type==="door"){
     const r=Math.min(w,h);
@@ -628,7 +644,7 @@ function glyph(it){
       <rect x="${w*0.055}" y="${p*0.24}" width="${pw}" height="${p*0.52}" rx="2" fill="var(--closet)" stroke="var(--dim)" stroke-width="0.7"/>
       <rect x="${w-w*0.055-pw}" y="${p*0.24}" width="${pw}" height="${p*0.52}" rx="2" fill="var(--closet)" stroke="var(--dim)" stroke-width="0.7"/>
       <line x1="0" y1="${p+(h-p)*0.3}" x2="${w}" y2="${p+(h-p)*0.3}" stroke="var(--dim)" stroke-width="0.7"/>
-      <text x="${w/2}" y="${h*0.68}" text-anchor="middle" fill="var(--ink)" style="${CAP}">${L}</text>`;
+      ${capText(it, w/2, h*0.68, L, "var(--ink)")}`;
   }
 
   if(it.type==="stairs"){
@@ -639,7 +655,7 @@ function glyph(it){
       <rect x="0" y="0" width="${w}" height="${h}" fill="none" stroke="var(--ink)" stroke-width="1.1"/>${t}
       <line x1="${w/2}" y1="2" x2="${w/2}" y2="${h-5}" stroke="var(--ink)" stroke-width="1.1"/>
       <path d="M ${w/2-3.5} ${h-8} L ${w/2} ${h-2} L ${w/2+3.5} ${h-8} Z" fill="var(--ink)"/>
-      <text x="${w/2+6}" y="9" fill="var(--dim)" style="${CAP}">${L||"DN"}</text>`;
+      ${capText(it, w/2+6, 9, L||"DN", "var(--dim)", "start")}`;
   }
 
   if(it.type==="nightstand"){
@@ -647,7 +663,7 @@ function glyph(it){
       <rect x="0" y="0" width="${w}" height="${h}" fill="var(--paper)" stroke="var(--ink)" stroke-width="1.1"/>
       <rect x="1.6" y="${h*0.55}" width="${w-3.2}" height="${h*0.34}" fill="none" stroke="var(--dim)" stroke-width="0.7"/>
       <line x1="${w*0.38}" y1="${h*0.72}" x2="${w*0.62}" y2="${h*0.72}" stroke="var(--dim)" stroke-width="1.1"/>
-      <text x="${w/2}" y="${h*0.38}" text-anchor="middle" fill="var(--ink)" style="${CAP}">${L}</text>`;
+      ${capText(it, w/2, h*0.38, L, "var(--ink)")}`;
   }
 
   if(it.type==="shelf"){
@@ -657,7 +673,7 @@ function glyph(it){
     return `
       <rect x="0" y="0" width="${w}" height="${h}" fill="var(--paper)" stroke="var(--ink)" stroke-width="1.1"/>
       ${bars}
-      <text x="${w/2}" y="${h-2.5}" text-anchor="middle" fill="var(--ink)" style="${CAP}">${L}</text>`;
+      ${capText(it, w/2, h-2.5, L, "var(--ink)")}`;
   }
 
   if(it.type==="window"){
@@ -669,7 +685,7 @@ function glyph(it){
 
   if(it.type==="opening"){
     return `<rect x="0" y="0" width="${w}" height="${h}" fill="none" stroke="var(--ink)" stroke-width="1.1" stroke-dasharray="4 3"/>
-            <text x="${w/2}" y="${h/2+3}" text-anchor="middle" fill="var(--dim)" style="${CAP}">${L||fmt(w)}</text>`;
+            ${capText(it, w/2, h/2+3, L||fmt(w), "var(--dim)")}`;
   }
 
   // wardrobe / fixture
@@ -678,7 +694,7 @@ function glyph(it){
   const swing = (it.type==="closet") ? doorSwing(it) : "";
   return `${swing}
           <rect x="0" y="0" width="${w}" height="${h}" fill="${it.type==="closet"?"var(--closet)":"var(--paper)"}" stroke="var(--ink)" stroke-width="1.1"/>${rod}
-          <text x="${w/2}" y="${h/2+3}" text-anchor="middle" fill="var(--ink)" style="${CAP}">${L}</text>`;
+          ${capText(it, w/2, h/2+3, L, "var(--ink)")}`;
 }
 
 /* Hinged PAX doors max out at 19½" wide, so split the frame into that many leaves.
@@ -1056,6 +1072,7 @@ function renderPanel(){
     <div class="chips">
       ${presets}
       <button id="pRot">ROTATE 90°</button>
+      <button id="pLabelRot" class="${it.lr?"on":""}">TURN LABEL</button>
       ${it.type==="door"?'<button id="pFlip">FLIP HINGE</button>':""}
       <button id="pDup">DUPLICATE</button>
       <button id="pDel" class="danger">DELETE</button>
@@ -1102,6 +1119,7 @@ function bindProps(){
   $("pType").addEventListener("change", e=>{ push(); patch(sel,{type:e.target.value}); render(); });
   $("pLabel").addEventListener("input", e=>{ patch(sel,{label:e.target.value}); renderPlan(); save(); });
   $("pRot").addEventListener("click", ()=>{ push(); patch(sel,{rot:((it().rot||0)+90)%360}); render(); });
+  $("pLabelRot").addEventListener("click", ()=>{ push(); patch(sel,{lr:it().lr?0:90}); render(); });
   if($("pFlip")) $("pFlip").addEventListener("click", ()=>{ push(); patch(sel,{flip:!it().flip}); render(); });
   $("pDup").addEventListener("click", ()=>{
     push(); const c = Object.assign({}, it(), {id:uid(), x:it().x+6, y:it().y+6});
