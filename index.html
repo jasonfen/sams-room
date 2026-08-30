@@ -173,6 +173,7 @@
 <script>
 /* ─────────── constants ─────────── */
 const WALL = 5;
+const MINROOM = 12;                 /* a wall drag stops here rather than inverting the room */
 
 /* IKEA PAX frame sizes, inches. Singles plus the stock 2-frame kits. */
 const PAX_W = [["19⅝",19.625],["29½",29.5],["39¼",39.25],["58⅞",58.875],["78⅝",78.625]];
@@ -507,7 +508,10 @@ async function bootShare(){
 
 /* ─────────── geometry helpers ─────────── */
 const M = 34;
-function viewBox(){ return {x:-M, y:-M, w:doc.room.w+M*2, h:doc.room.h+M*2}; }
+let heldVB = null;                  /* set while a wall is being dragged */
+function viewBox(){
+  return heldVB || {x:-M, y:-M, w:doc.room.w+M*2, h:doc.room.h+M*2};
+}
 function toPlan(cx,cy){
   const vb=viewBox(), r=svg.getBoundingClientRect();
   const s=Math.min(r.width/vb.w, r.height/vb.h);
@@ -735,6 +739,17 @@ function render2D(){
   <text x="0" y="-13" fill="var(--dim)" pointer-events="none"
         style="font:600 6.5px 'Archivo Narrow',sans-serif;letter-spacing:1.6px">EXTERIOR WALL</text>`;
 
+  /* Drag an exterior wall to move it. These sit below the items so a window or
+     door living in the wall still takes the click. */
+  const gw = Math.max(WALL, hs*0.9);
+  const strip = (x,y,w,h,side,cur)=>
+    `<rect class="ui" x="${x}" y="${y}" width="${w}" height="${h}" fill="transparent"
+           data-mode="wall:${side}" style="cursor:${cur}"/>`;
+  s += strip(-gw/2, -gw/2, gw, room.h+gw, "left",  "ew-resize")
+     + strip(room.w-gw/2, -gw/2, gw, room.h+gw, "right", "ew-resize")
+     + strip(-gw/2, -gw/2, room.w+gw, gw, "top",    "ns-resize")
+     + strip(-gw/2, room.h-gw/2, room.w+gw, gw, "bottom", "ns-resize");
+
   for(const it of doc.items){
     const cx=it.x+it.w/2, cy=it.y+it.h/2, on=(it.id===sel);
     let inner = glyph(it);
@@ -756,6 +771,13 @@ function render2D(){
     s += `<g data-id="${it.id}" transform="rotate(${it.rot||0} ${cx} ${cy})">
             <g transform="translate(${it.x} ${it.y})">${inner}</g>${d}</g>`;
   }
+
+  const tl = Math.max(8, Math.min(room.w, room.h)*0.07), tt = 2.2;
+  const tab = (x,y,w,h)=>`<rect class="ui" x="${x}" y="${y}" width="${w}" height="${h}"
+      rx="${Math.min(w,h)/2}" fill="var(--accent)" stroke="var(--accentink)" stroke-width="0.5"
+      opacity="0.9" pointer-events="none"/>`;
+  s += tab(-tt/2, room.h/2-tl/2, tt, tl) + tab(room.w-tt/2, room.h/2-tl/2, tt, tl)
+     + tab(room.w/2-tl/2, -tt/2, tl, tt) + tab(room.w/2-tl/2, room.h-tt/2, tl, tt);
 
   if(sel && item(sel)) s += clearDims(item(sel));
 
@@ -1125,6 +1147,15 @@ svg.addEventListener("pointerdown", e=>{
   }
   const hit = e.target.closest("[data-mode]");
   if(!hit){ if(sel!==null){ sel=null; render(); } return; }
+  if(hit.dataset.mode.indexOf("wall:") === 0){
+    push();
+    heldVB = viewBox();
+    drag = { mode:hit.dataset.mode, start:toPlan(e.clientX,e.clientY),
+             orig:{w:doc.room.w, h:doc.room.h, splitY:doc.splitY,
+                   items:doc.items.map(i=>({id:i.id, x:i.x, y:i.y}))} };
+    e.preventDefault();
+    return;
+  }
   const g = e.target.closest("[data-id]");
   if(!g) return;
   push();
@@ -1151,6 +1182,31 @@ window.addEventListener("pointermove", e=>{
   if(!drag) return;
   const p = toPlan(e.clientX,e.clientY);
   const dx = p.x-drag.start.x, dy = p.y-drag.start.y, o = drag.orig;
+
+  if(drag.mode.indexOf("wall:") === 0){
+    /* The room's top-left is the origin, so moving the left or top wall shifts
+       every coordinate under it by the same amount — that is what keeps the
+       furniture standing where it already stands. */
+    const side = drag.mode.slice(5);
+    const shift = d => o.items.forEach(m=>{
+      const it = item(m.id); if(!it) return;
+      if(side==="left") it.x = m.x - d; else it.y = m.y - d;
+    });
+    if(side==="right")  doc.room.w = Math.max(MINROOM, sn(o.w + dx));
+    if(side==="bottom") doc.room.h = Math.max(MINROOM, sn(o.h + dy));
+    if(side==="left"){
+      doc.room.w = Math.max(MINROOM, sn(o.w - dx));
+      shift(o.w - doc.room.w);
+    }
+    if(side==="top"){
+      doc.room.h = Math.max(MINROOM, sn(o.h - dy));
+      const d = o.h - doc.room.h;
+      doc.splitY = o.splitY - d;
+      shift(d);
+    }
+    renderPlan(); syncPanel();
+    return;
+  }
 
   if(drag.mode==="move"){
     patch(sel,{x:sn(o.x+dx), y:sn(o.y+dy)});
@@ -1183,8 +1239,12 @@ window.addEventListener("pointerup", e=>{
     return;
   }
   if(drag){ drag=null; save(); }
+  if(heldVB){ heldVB=null; renderPlan(); }        /* refit the room in the frame */
 });
-window.addEventListener("pointercancel", e=>{ ptrs.delete(e.pointerId); orbit=null; pinch=null; drag=null; });
+window.addEventListener("pointercancel", e=>{
+  ptrs.delete(e.pointerId); orbit=null; pinch=null; drag=null;
+  if(heldVB){ heldVB=null; renderPlan(); }
+});
 
 svg.addEventListener("wheel", e=>{
   if(!mode3d) return;
@@ -1306,6 +1366,8 @@ $("bSvg").onclick = ()=>{
   const vb = viewBox();
   c.setAttribute("width",  Math.round(vb.w*4));   // ~4px per inch
   c.setAttribute("height", Math.round(vb.h*4));
+
+  c.querySelectorAll(".ui").forEach(n=>n.remove());   // wall grips are for editing only
 
   const st = document.createElementNS(NS, "style");
   st.textContent =
