@@ -1208,8 +1208,12 @@ $("addRow").querySelectorAll("[data-add]").forEach(b=>b.onclick=()=>{
     fixture:{w:30,h:24,label:"Fixture"}
   }[t];
   push();
-  const o = Object.assign({id:uid(), type:t, rot:0,
-    x:sn(doc.room.w/2-base.w/2), y:sn(doc.room.h/2-base.h/2)}, base);
+  /* start in the top-left corner at 0,0 — centring put anything wider than the
+     room at a negative FROM LEFT. Step down the diagonal only when that exact
+     spot is taken, so a run of adds is not one invisible pile. */
+  let x = 0, y = 0;
+  while(doc.items.some(i=>i.x===x && i.y===y)){ x = sn(x+6); y = sn(y+6); }
+  const o = Object.assign({id:uid(), type:t, rot:0, x, y}, base);
   doc.items.push(o); sel=o.id; render();
 });
 
