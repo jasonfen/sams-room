@@ -71,6 +71,7 @@
     <button id="bFit">FIT</button>
     <button id="bFeet">FT-IN</button>
     <button id="bDims">ALL DIMS</button>
+    <button id="bMeasure" title="Measure between two points (M)">MEASURE</button>
     <button id="b3d">3D</button>
     <button id="bUndo">UNDO</button>
     <button id="bRedo">REDO</button>
@@ -597,8 +598,65 @@ function toPlan(cx,cy){
   return { x:(cx-r.left-(r.width-vb.w*s)/2)/s + vb.x,
            y:(cy-r.top -(r.height-vb.h*s)/2)/s + vb.y };
 }
+function snapPoint(cx, cy){
+  const p = toPlan(cx, cy);
+  return {x:sn(p.x), y:sn(p.y)};
+}
 function item(id){ return doc.items.find(i=>i.id===id); }
 function patch(id,p){ Object.assign(item(id), p); }
+
+/* ─────────── quick measure ───────────
+   A scratch tool, not part of the plan: never saved, never exported. Points
+   land on the snap increment like everything else, so a measurement agrees
+   with the coordinates it is checking. */
+let measure = null;      /* {a, b, cursor, locked} while the tool is up */
+
+function measureOn(on){
+  if(mode3d){ note("Measuring is a plan-view tool"); return; }
+  measure = on ? {a:null, b:null, cursor:null, locked:false} : null;
+  $("bMeasure").classList.toggle("on", !!measure);
+  renderPlan();
+  if(measure) note("Click to start measuring, click again to lock it");
+}
+
+function measureClick(p){
+  if(!measure.a || measure.locked){ measure.a = p; measure.b = null; measure.locked = false; }
+  else { measure.b = p; measure.locked = true; }
+  renderPlan();
+}
+
+function measureArt(){
+  if(!measure) return "";
+  const sw = ann(0.9), t = ann(3.2), fs = ann(doc.dimSize || 8);
+  const cross = q => `<path d="M ${q.x-t} ${q.y} H ${q.x+t} M ${q.x} ${q.y-t} V ${q.y+t}"
+      stroke="var(--accent)" stroke-width="${sw}" fill="none"/>`;
+  const a = measure.a;
+  if(!a) return measure.cursor ? `<g class="ui" pointer-events="none">${cross(measure.cursor)}</g>` : "";
+
+  const b = measure.b || measure.cursor || a;
+  const dx = b.x-a.x, dy = b.y-a.y, len = Math.hypot(dx, dy);
+  let s = `<g class="ui" pointer-events="none">
+    <line x1="${a.x}" y1="${a.y}" x2="${b.x}" y2="${b.y}" stroke="var(--accent)"
+          stroke-width="${sw}" ${measure.locked ? "" : 'stroke-dasharray="' + ann(4) + ' ' + ann(3) + '"'}/>
+    ${cross(a)}${cross(b)}`;
+  if(len > 0.01){
+    /* the label rides the line, turned upright whichever way it points, and
+       carries a paper-coloured halo so it stays legible over the drawing */
+    const mx = (a.x+b.x)/2, my = (a.y+b.y)/2;
+    let ang = Math.atan2(dy, dx)*180/Math.PI;
+    if(ang > 90 || ang < -90) ang += 180;
+    const run = Math.abs(dx) > 0.01 && Math.abs(dy) > 0.01
+      ? `<text x="${mx}" y="${my+fs*1.15}" text-anchor="middle" fill="var(--dim)"
+              stroke="var(--paper)" stroke-width="${ann(1.6)}" paint-order="stroke"
+              style="font:500 ${fs*0.78}px 'IBM Plex Mono',monospace">${fmt(Math.abs(dx))} \u00D7 ${fmt(Math.abs(dy))}</text>`
+      : "";
+    s += `<g transform="rotate(${ang} ${mx} ${my})">
+      <text x="${mx}" y="${my-ann(3)}" text-anchor="middle" fill="var(--accentink)"
+            stroke="var(--paper)" stroke-width="${ann(2)}" paint-order="stroke"
+            style="font:600 ${fs}px 'IBM Plex Mono',monospace">${fmt(len)}</text>${run}</g>`;
+  }
+  return s + "</g>";
+}
 
 /* ─────────── clearances — what the tape measure would read ─────────── */
 
@@ -878,6 +936,7 @@ function render2D(){
      + tab(room.w/2-tl/2, -tt/2, tl, tt) + tab(room.w/2-tl/2, room.h-tt/2, tl, tt);
 
   if(sel && item(sel)) s += clearDims(item(sel));
+  s += measureArt();
 
   s += dim(0,0,room.w,0,-24,fmt(room.w),null,0.9);
   s += dim(room.w,0,room.w,splitY,16,fmt(splitY),null,0.9);
@@ -1073,6 +1132,7 @@ function sync3(){
 }
 function renderPlan(){
   svg.style.cursor = mode3d ? (orbit ? "grabbing" : "grab")
+                            : measure ? "crosshair"
                             : (pandrag ? "grabbing" : z2 > 1 ? "grab" : "default");
   mode3d ? render3D() : render2D();
   syncZoom();
@@ -1107,7 +1167,7 @@ function renderPanel(){
   if(!it){
     panelFor = null;
     $("props").innerHTML = `<div id="hint">Tap anything on the plan to move it, drag the yellow
-      corners to resize, or type exact inches here.</div>`;
+      corners to resize, or type exact inches here. Press M to measure between two points.</div>`;
     return;
   }
   panelFor = it.id;
@@ -1255,6 +1315,11 @@ svg.addEventListener("pointerdown", e=>{
     e.preventDefault();
     return;
   }
+  if(measure){
+    measureClick(snapPoint(e.clientX, e.clientY));
+    e.preventDefault();
+    return;
+  }
   const hit = e.target.closest("[data-mode]");
   if(!hit){
     if(z2 > 1){                              /* zoomed in, the paper can be pushed around */
@@ -1294,6 +1359,12 @@ window.addEventListener("pointermove", e=>{
       pitch = clamp(orbit.pitch + (e.clientY-orbit.y)*0.25, 8, 85);
       renderPlan(); sync3();
     }
+    return;
+  }
+  if(measure && !measure.locked){
+    const p = snapPoint(e.clientX, e.clientY);
+    if(measure.a) measure.b = p; else measure.cursor = p;
+    renderPlan();
     return;
   }
   if(ptrs.has(e.pointerId)) ptrs.set(e.pointerId, {x:e.clientX, y:e.clientY});
@@ -1400,6 +1471,8 @@ window.addEventListener("keydown", e=>{
   if(e.key==="+"||e.key==="="){ e.preventDefault(); zoomStep(1.25); return; }
   if(e.key==="-"||e.key==="_"){ e.preventDefault(); zoomStep(1/1.25); return; }
   if(e.key==="0"){ e.preventDefault(); zoomFit(); return; }
+  if(e.key==="m"||e.key==="M"){ e.preventDefault(); measureOn(!measure); return; }
+  if(e.key==="Escape" && measure){ e.preventDefault(); measureOn(false); return; }
   if(mode3d){
     const k = {ArrowLeft:[-5,0], ArrowRight:[5,0], ArrowUp:[0,-3], ArrowDown:[0,3]}[e.key];
     if(k){ e.preventDefault();
@@ -1428,6 +1501,7 @@ $("bZoomOut").onclick = ()=> zoomStep(1/1.25);
 $("bFit").onclick     = zoomFit;
 $("bFeet").onclick = ()=>{ feet=!feet; render(); };
 $("bDims").onclick = ()=>{ showDims=!showDims; render(); };
+$("bMeasure").onclick = ()=> measureOn(!measure);
 $("b3d").onclick = ()=>{ mode3d = !mode3d; render(); };
 $("v3yaw").addEventListener("input",   e=>{ yaw = +e.target.value;   renderPlan(); });
 $("v3pitch").addEventListener("input", e=>{ pitch = +e.target.value; renderPlan(); });
