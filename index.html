@@ -334,13 +334,37 @@ function uniqueName(n){
   if(!lib.rooms.some(r=>r.name===base)) return base;
   for(let i=2;;i++){ const t = base+" ("+i+")"; if(!lib.rooms.some(r=>r.name===t)) return t; }
 }
-function roomRec(name,d){ return {id:uid()+uid(), name:uniqueName(name), updated:Date.now(), doc:d}; }
+function roomRec(name,d,src){
+  const r = {id:uid()+uid(), name:uniqueName(name), updated:Date.now(), doc:d};
+  if(src) r.src = src;                             /* the share this room arrived on */
+  return r;
+}
 function cleanRoom(r){
   if(!r || typeof r!=="object") return null;
   const d = cleanDoc(r.doc || r);
   if(!d) return null;
-  return {id:txt(r.id,32)||uid()+uid(), name:txt(r.name,60)||d.name||"Untitled room",
-          updated:numv(r.updated,0,0,8.64e15), doc:d};
+  const out = {id:txt(r.id,32)||uid()+uid(), name:txt(r.name,60)||d.name||"Untitled room",
+               updated:numv(r.updated,0,0,8.64e15), doc:d};
+  if(r.src) out.src = txt(r.src,40);
+  return out;
+}
+
+/* A share link carries no id, and a fresh one is built every time COPY LINK is
+   pressed, so what identifies a shared room is the room itself. Names go
+   through cleanDoc first, which writes every key in the same order, so two
+   copies of one room always hash alike. */
+function sigOf(t){
+  let a = 0x811c9dc5, b = 0x01000193;
+  for(let i=0;i<t.length;i++){
+    const c = t.charCodeAt(i);
+    a = Math.imul(a ^ c, 16777619) >>> 0;
+    b = Math.imul(b + c + i, 2654435761) >>> 0;
+  }
+  return a.toString(36) + "-" + b.toString(36);
+}
+function roomSig(name,d){
+  const c = cleanDoc(d);
+  return c ? sigOf(txt(name,60) + "\u0000" + JSON.stringify(c)) : "";
 }
 function activeRoom(){ return lib.rooms.find(r=>r.id===lib.activeId) || null; }
 
@@ -450,14 +474,44 @@ function ingest(data){
   return out;
 }
 
-/* Imports never overwrite: each arrival becomes a new room with a fresh id and a free name. */
-function adopt(list){
+/* Imports never overwrite: each arrival becomes a new room with a fresh id and a free name.
+   A link is the exception. It gets opened again — from the message it came in, in
+   a second tab, by the sender checking it — and none of that is a request for
+   another copy, so a link already taken just reopens the room it brought. The
+   library is matched on what it holds now and on what each room arrived as, so a
+   room renamed or rearranged since is still recognised as that link's room. */
+function adopt(list, fromLink){
   if(!list.length){ note("No rooms in that data"); return; }
   save();
+  let known = null;
+  if(fromLink){
+    const have = new Map();
+    lib.rooms.forEach(r=>{
+      const sig = roomSig(r.name, r.doc);
+      if(sig) have.set(sig, r);
+      if(r.src) have.set(r.src, r);
+    });
+    const fresh = [];
+    list.forEach(r=>{
+      const sig = roomSig(r.name, r.doc), hit = have.get(sig);
+      if(hit) known = known || hit; else fresh.push(Object.assign({src:sig}, r));
+    });
+    if(!fresh.length){
+      if(known && known.id !== lib.activeId){
+        lib.activeId = known.id; doc = clone(known.doc); sel = null; past = []; future = [];
+        libSave();
+      }
+      render();
+      note(list.length===1 ? "You already have this room — opened it"
+                           : "You already have those rooms");
+      return;
+    }
+    list = fresh;
+  }
   const use = list.slice(0, Math.max(0, MAX_ROOMS - lib.rooms.length));
   if(!use.length){ note("Library is full at " + MAX_ROOMS + " rooms — delete one first"); return; }
   let first = null;
-  use.forEach(r=>{ const rec = roomRec(r.name, r.doc); lib.rooms.push(rec); first = first || rec; });
+  use.forEach(r=>{ const rec = roomRec(r.name, r.doc, r.src); lib.rooms.push(rec); first = first || rec; });
   lib.activeId = first.id; doc = clone(first.doc); sel = null; past = []; future = [];
   libSave(); render();
   note("Imported " + use.length + (use.length===1?" room":" rooms") +
@@ -520,7 +574,7 @@ async function bootShare(){
   let data = null;
   try{ data = await unpackShare(payload); }
   catch(e){ note("That share link is damaged"); return; }
-  adopt(ingest(data));
+  adopt(ingest(data), true);
 }
 
 /* ─────────── geometry helpers ─────────── */
