@@ -185,6 +185,13 @@ const PAX_W = [["19⅝",19.625],["29½",29.5],["39¼",39.25],["58⅞",58.875],["
 const PAX_D = [["13¾ DEEP",13.75],["22⅞ DEEP",22.875]];
 const BEDS  = {Twin:[38,75],"Twin XL":[38,80],Full:[54,75],Queen:[60,80],King:[76,80]};
 
+/* Couches — the body's width × depth in inches, the way a showroom tag reads
+   them. A chaise is measured on its own: its length runs out from the back of
+   the couch, its width runs across the face. */
+const COUCH = [["LOVESEAT",60,36],["SOFA 84",84,37],["SOFA 96",96,38],["SECTIONAL 110",110,40]];
+const CHAISE_L = 63;
+const CHAISE_W = 33;
+
 /* Nightstands — IKEA current sizes, width × depth in inches */
 const NIGHT = [["HEMNES",18.125,13.75],["MALM",15.75,18.875],
                ["SONGESAND",16.5,15.75],["NORDKISA",23.625,15.75]];
@@ -194,7 +201,7 @@ const SHELF = [["BILLY 15¾",15.75,11],["BILLY 31½",31.5,11],
                ["KALLAX 1×4",16.125,15.375],["KALLAX 2×2 / 2×4",30.375,15.375],
                ["KALLAX 4×4",57.875,15.375]];
 
-const TYPES = {closet:"Wardrobe", bed:"Bed", nightstand:"Nightstand", shelf:"Bookcase",
+const TYPES = {closet:"Wardrobe", bed:"Bed", couch:"Couch", nightstand:"Nightstand", shelf:"Bookcase",
                opening:"Opening", door:"Door", window:"Window", stairs:"Stairs",
                wall:"Wall", fixture:"Fixture"};
 
@@ -260,6 +267,7 @@ const SHARE_TAG   = "#room=";
 const MAX_ROOMS   = 60;
 const MAX_ITEMS   = 400;
 const DOORMODES   = ["hinged","sliding","open"];
+const CHAISE_SIDES = ["none","left","right","both"];
 
 let lib = {v:1, activeId:null, rooms:[]};
 let armDel = false;
@@ -310,6 +318,9 @@ function cleanDoc(d){
     if(s.sill  != null) o.sill  = numv(s.sill,30,0,600);   /* 3D window sill   */
     if(s.doors != null) o.doors = DOORMODES.indexOf(s.doors)<0 ? "hinged" : s.doors;
     if(s.flip  != null) o.flip  = !!s.flip;
+    if(s.cl    != null) o.cl    = numv(s.cl,CHAISE_L,0,4000);   /* chaise length  */
+    if(s.cw    != null) o.cw    = numv(s.cw,CHAISE_W,0,4000);   /* chaise width   */
+    if(s.cs    != null) o.cs    = CHAISE_SIDES.indexOf(s.cs)<0 ? "none" : s.cs;
     while(seen.has(o.id)) o.id = uid();
     seen.add(o.id);
     out.items.push(o);
@@ -660,11 +671,42 @@ function measureArt(){
 
 /* ─────────── clearances — what the tape measure would read ─────────── */
 
+/* A chaise sits at one end of a couch, or at both. Its length is measured from
+   the back of the couch — the way a spec sheet gives it — so a chaise shorter
+   than the body simply does not reach past the front edge. Its width runs
+   across the face and is part of the couch's overall width, so a chaise on
+   both ends can take at most half the couch each. */
+function chaise(it){
+  if(!it || it.type!=="couch") return null;
+  const side = CHAISE_SIDES.indexOf(it.cs) > 0 ? it.cs : null;   /* 0 is "none" */
+  if(!side) return null;
+  const wid = Math.min(it.cw!=null ? it.cw : CHAISE_W, side==="both" ? it.w/2 : it.w);
+  const len = it.cl!=null ? it.cl : CHAISE_L;
+  return (wid > 0.25 && len > 0.25) ? {side, wid, len} : null;
+}
+
+/* the local box an item covers — a chaise reaches past the couch's body */
+function boxOf(it){
+  const c = chaise(it);
+  return {w: it.w, h: c ? Math.max(it.h, c.len) : it.h};
+}
+
+/* the couch outline: a plain rectangle, or an L / U once a chaise reaches
+   past the front edge of the body */
+function couchPoly(it){
+  const c = chaise(it), w = it.w, h = it.h;
+  if(!c || c.len <= h) return [[0,0],[w,0],[w,h],[0,h]];
+  const d = c.len, p = [[0,0],[w,0]];
+  if(c.side==="left")  p.push([w,h]); else p.push([w,d],[w-c.wid,d],[w-c.wid,h]);
+  if(c.side==="right") p.push([0,h]); else p.push([c.wid,h],[c.wid,d],[0,d]);
+  return p;
+}
+
 /* the axis-aligned patch of floor an item covers, rotation included */
 function footprint(it){
-  const cx = it.x+it.w/2, cy = it.y+it.h/2;
+  const cx = it.x+it.w/2, cy = it.y+it.h/2, b = boxOf(it);
   let x0=Infinity, y0=Infinity, x1=-Infinity, y1=-Infinity;
-  for(const [lx,ly] of [[0,0],[it.w,0],[0,it.h],[it.w,it.h]]){
+  for(const [lx,ly] of [[0,0],[b.w,0],[0,b.h],[b.w,b.h]]){
     const v = rotVec(lx-it.w/2, ly-it.h/2, it.rot||0);
     x0=Math.min(x0,cx+v.x); x1=Math.max(x1,cx+v.x);
     y0=Math.min(y0,cy+v.y); y1=Math.max(y1,cy+v.y);
@@ -781,6 +823,36 @@ function glyph(it){
       <rect x="${w-w*0.055-pw}" y="${p*0.24}" width="${pw}" height="${p*0.52}" rx="2" fill="var(--closet)" stroke="var(--dim)" stroke-width="0.7"/>
       <line x1="0" y1="${p+(h-p)*0.3}" x2="${w}" y2="${p+(h-p)*0.3}" stroke="var(--dim)" stroke-width="0.7"/>
       ${capText(it, w/2, h*0.68, L, "var(--ink)")}`;
+  }
+
+  if(it.type==="couch"){
+    const c = chaise(it);
+    const hasL = !!c && (c.side==="left"  || c.side==="both");
+    const hasR = !!c && (c.side==="right" || c.side==="both");
+    const front = c ? Math.max(c.len, h) : h;          /* how far the piece reaches */
+    const back = Math.min(h*0.26, 9), arm = Math.min(w*0.08, 5.5);
+    const seam = 'stroke="var(--dim)" stroke-width="0.7"';
+    const pts = couchPoly(it).map(q=>q[0].toFixed(2)+","+q[1].toFixed(2)).join(" ");
+    let s = `<polygon points="${pts}" fill="var(--paper)" stroke="var(--ink)" stroke-width="1.2"/>
+      <line x1="0" y1="${back}" x2="${w}" y2="${back}" stroke="var(--ink)" stroke-width="0.9"/>
+      <line x1="${arm}" y1="${back}" x2="${arm}" y2="${hasL?front:h}" ${seam}/>
+      <line x1="${w-arm}" y1="${back}" x2="${w-arm}" y2="${hasR?front:h}" ${seam}/>`;
+    /* seat cushions span what is left of the couch once the chaises take their end */
+    const x0 = hasL ? c.wid : arm, x1 = hasR ? w-c.wid : w-arm;
+    const n = Math.max(1, Math.round((x1-x0)/26));
+    for(let i=1;i<n;i++){
+      const x = x0+(x1-x0)*i/n;
+      s += `<line x1="${x}" y1="${back}" x2="${x}" y2="${h}" ${seam}/>`;
+    }
+    if(c){
+      const pw = Math.max(1, c.wid-arm-2), ph = Math.max(1, front-back-2);
+      const pad = px => `<rect x="${px}" y="${back+1}" width="${pw}" height="${ph}" rx="2"
+            fill="var(--closet)" stroke="var(--dim)" stroke-width="0.7"/>`;
+      if(hasL) s += pad(arm+1);
+      if(hasR) s += pad(w-c.wid+1);
+    }
+    const mid = x1 > x0 ? (x0+x1)/2 : w/2;
+    return s + capText(it, mid, back+(h-back)*0.66, L, "var(--ink)");
   }
 
   if(it.type==="stairs"){
@@ -905,12 +977,12 @@ function render2D(){
      + strip(-gw/2, room.h-gw/2, room.w+gw, gw, "bottom", "ns-resize");
 
   for(const it of doc.items){
-    const cx=it.x+it.w/2, cy=it.y+it.h/2, on=(it.id===sel);
+    const cx=it.x+it.w/2, cy=it.y+it.h/2, on=(it.id===sel), bx=boxOf(it);
     let inner = glyph(it);
-    inner += `<rect x="0" y="0" width="${it.w}" height="${Math.max(it.h,8)}" fill="transparent" data-mode="move" style="cursor:move"/>`;
+    inner += `<rect x="0" y="0" width="${bx.w}" height="${Math.max(bx.h,8)}" fill="transparent" data-mode="move" style="cursor:move"/>`;
     if(on){
       const o = ann(1.5);
-      inner += `<rect x="${-o}" y="${-o}" width="${it.w+o*2}" height="${it.h+o*2}" fill="none"
+      inner += `<rect x="${-o}" y="${-o}" width="${bx.w+o*2}" height="${bx.h+o*2}" fill="none"
                  stroke="var(--accent)" stroke-width="${ann(1.4)}" pointer-events="none"/>`;
       for(const [sx,sy] of [[-1,-1],[1,-1],[-1,1],[1,1]]){
         inner += `<rect x="${(sx<0?0:it.w)-hs/2}" y="${(sy<0?0:it.h)-hs/2}" width="${hs}" height="${hs}"
@@ -923,6 +995,14 @@ function render2D(){
       const col = on ? "var(--accentink)" : "var(--dim)";
       d += dim(it.x, it.y, it.x+it.w, it.y, -11, fmt(it.w), col);
       if(it.h>8) d += dim(it.x+it.w, it.y, it.x+it.w, it.y+it.h, 11, fmt(it.h), col);
+      /* a chaise gets its own two numbers: how far it reaches, how wide it runs */
+      const c = chaise(it);
+      if(c){
+        if(bx.h > it.h+0.24) d += dim(it.x, it.y, it.x, it.y+bx.h, -11, fmt(bx.h), col);
+        const fy = it.y+bx.h;
+        if(c.side!=="right") d += dim(it.x, fy, it.x+c.wid, fy, 11, fmt(c.wid), col);
+        if(c.side!=="left")  d += dim(it.x+it.w-c.wid, fy, it.x+it.w, fy, 11, fmt(c.wid), col);
+      }
     }
     s += `<g data-id="${it.id}" transform="rotate(${it.rot||0} ${cx} ${cy})">
             <g transform="translate(${it.x} ${it.y})">${inner}</g>${d}</g>`;
@@ -971,11 +1051,12 @@ let orbit = null, pinch = null; const ptrs = new Map();
 const clamp = (v,a,b)=>Math.max(a,Math.min(b,v));
 
 /* default object heights in inches — override per item with the HEIGHT field */
-const H3  = {closet:79.25, bed:24, nightstand:26, shelf:79.5, wall:96, fixture:30, door:80,
-             window:48};                    /* window h3 = pane height, sill sits at SILL */
+const H3  = {closet:79.25, bed:24, couch:33, nightstand:26, shelf:79.5, wall:96,
+             fixture:30, door:80, window:48};   /* window h3 = pane height, sill sits at SILL */
 const SILL = 30;                            /* window sill elevation above the floor */
-const MAT = {closet:"#C7B79C", bed:"#DDE3E6", nightstand:"#C7B79C", shelf:"#C7B79C",
-             stairs:"#CDD3D0", wall:"#E2E5DE", door:"#B7A88E", fixture:"#D6DAD3"};
+const MAT = {closet:"#C7B79C", bed:"#DDE3E6", couch:"#BFC7C2", nightstand:"#C7B79C",
+             shelf:"#C7B79C", stairs:"#CDD3D0", wall:"#E2E5DE", door:"#B7A88E",
+             fixture:"#D6DAD3"};
 const LIGHT = (()=>{ const l=[-0.35,-0.55,0.78], m=Math.hypot(l[0],l[1],l[2]);
                      return l.map(x=>x/m); })();
 
@@ -1078,6 +1159,23 @@ function render3D(){
       const r = Math.min(it.w,it.h), lx = it.flip ? it.w : 0;
       const q = [[lx-0.8,0],[lx+0.8,0],[lx+0.8,r],[lx-0.8,r]].map(c=>L2W(it,c[0],c[1]));
       box(q, 0, heightOf(it), MAT.door, on);
+      continue;
+    }
+
+    if(it.type === "couch"){
+      const c = chaise(it), H = heightOf(it);
+      const seat = Math.max(1, Math.min(H*0.55, H-1)), back = Math.min(it.h*0.26, 9);
+      const quad = (x0,y0,x1,y1)=>
+        [[x0,y0],[x1,y0],[x1,y1],[x0,y1]].map(q=>L2W(it,q[0],q[1]));
+      box(quad(0,0,it.w,back), 0, H, MAT.couch, on);       /* the back, standing tall */
+      group();
+      const top = box(quad(0,back,it.w,it.h), 0, seat, MAT.couch, on);
+      if(c && c.len > it.h) for(const e of (c.side==="both" ? ["left","right"] : [c.side])){
+        const x0 = e==="left" ? 0 : it.w-c.wid;
+        group();                                           /* each pad sorts on its own */
+        box(quad(x0,it.h,x0+c.wid,c.len), 0, seat, MAT.couch, on);
+      }
+      if(it.label) labels.push({p:top, text:it.label, size:(it.ls||doc.labelSize||8)});
       continue;
     }
 
@@ -1193,6 +1291,16 @@ function renderPanel(){
       `<button class="sh ${(it.w===w&&it.h===h)?"on":""}" data-n="${n}" data-w="${w}" data-h="${h}">${n}</button>`).join("");
     presets += `<div class="brk"></div>`;
   }
+  if(it.type==="couch"){
+    presets += COUCH.map(([n,w,h])=>
+      `<button class="cc ${(it.w===w&&it.h===h)?"on":""}" data-n="${n}" data-w="${w}" data-h="${h}">${n}</button>`).join("");
+    presets += `<div class="brk"></div><span class="lbl">CHAISE ON</span><div class="brk"></div>`;
+    presets += CHAISE_SIDES.map(m=>
+      `<button class="ch ${(it.cs||"none")===m?"on":""}" data-m="${m}">${m.toUpperCase()}</button>`).join("");
+    presets += `<div class="brk"></div>
+      <span class="lbl">LENGTH RUNS OUT FROM THE BACK &middot; WIDTH RUNS ACROSS</span>
+      <div class="brk"></div>`;
+  }
   if(it.type==="bed"){
     presets += Object.entries(BEDS).map(([k,[w,h]])=>
       `<button class="bd ${(it.w===w&&it.h===h)?"on":""}" data-k="${k}">${k.toUpperCase()}</button>`).join("");
@@ -1206,7 +1314,10 @@ function renderPanel(){
       </select></label>
       <label class="f"><span>LABEL</span><input id="pLabel" type="text" value="${esc(it.label||"")}"></label>
     </div>
-    <div class="row">${field("pW","WIDTH",it.w)}${field("pH","DEPTH",it.h)}</div>
+    <div class="row">${field("pW","WIDTH",it.w)}${field("pH",it.type==="couch"?"BODY DEPTH":"DEPTH",it.h)}</div>
+    ${it.type==="couch" ? `<div class="row">
+        ${field("pCL","CHAISE LENGTH", it.cl!=null ? it.cl : CHAISE_L)}
+        ${field("pCW","CHAISE WIDTH",  it.cw!=null ? it.cw : CHAISE_W)}</div>` : ""}
     <div class="row">${field("pX","FROM LEFT",it.x)}${field("pY","FROM TOP",it.y)}
       ${field("pLS","LABEL SIZE", it.ls || doc.labelSize || 8, 0.5)}</div>
     <div class="row">${field("pGL","GAP LEFT", round4(gaps(it).left))}
@@ -1250,6 +1361,7 @@ function bindProps(){
     e.addEventListener("focus", ()=>{ push(); }, {once:false});
   };
   num("pW","w"); num("pH","h"); num("pX","x"); num("pY","y"); num("pLS","ls"); num("pZ","h3");
+  num("pCL","cl"); num("pCW","cw");
   [["pGL","left"],["pGT","top"]].forEach(([id,side])=>{
     const e = $(id); if(!e) return;
     e.addEventListener("input", ()=>{
@@ -1285,7 +1397,16 @@ function bindProps(){
   document.querySelectorAll(".dr").forEach(b=>b.addEventListener("click",()=>{
     push(); patch(sel,{doors:b.dataset.m}); render();
   }));
-  document.querySelectorAll(".ns,.sh").forEach(b=>b.addEventListener("click",()=>{
+  document.querySelectorAll(".ch").forEach(b=>b.addEventListener("click",()=>{
+    push();
+    const o = it(), p = {cs:b.dataset.m};
+    if(b.dataset.m!=="none"){          /* first chaise on this couch needs numbers to show */
+      if(o.cl==null) p.cl = CHAISE_L;
+      if(o.cw==null) p.cw = CHAISE_W;
+    }
+    patch(sel,p); render();
+  }));
+  document.querySelectorAll(".ns,.sh,.cc").forEach(b=>b.addEventListener("click",()=>{
     push(); patch(sel,{w:+b.dataset.w, h:+b.dataset.h, label:b.dataset.n}); render();
   }));
 }
@@ -1549,6 +1670,7 @@ $("addRow").querySelectorAll("[data-add]").forEach(b=>b.onclick=()=>{
   const base = {
     closet:{w:39.25,h:22.875,label:"PAX 39¼",doors:"hinged"},
     bed:{w:54,h:75,label:"Full"},
+    couch:{w:96,h:38,label:"Couch",cs:"right",cl:CHAISE_L,cw:CHAISE_W},
     nightstand:{w:18.125,h:13.75,label:"HEMNES"},
     shelf:{w:31.5,h:11,label:"BILLY 31½"},
     door:{w:32,h:32,label:"Door",flip:false},
